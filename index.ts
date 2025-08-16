@@ -3,12 +3,23 @@ import { generateObject } from 'ai'
 import { openai } from '@ai-sdk/openai'
 import { z } from 'zod'
 
+// IMPROVED SCHEMA - More detailed constraints
 const surfReportSchema = z.object({
-  report: z.string().max(600).describe("Concise surf report in local voice"),
-  boardRecommendation: z.string().describe("Board type"),
-  skillLevel: z.enum(['beginner', 'intermediate', 'advanced']),
-  bestSpots: z.array(z.string()).max(2).optional().describe("Top 2 spots"),
-  timingAdvice: z.string().optional().describe("Timing tip")
+  report: z.string()
+    .min(300)  // Minimum 300 characters
+    .max(800)  // Maximum 800 characters  
+    .describe("Detailed 2-3 paragraph surf report in authentic local St. Augustine surfer voice. Include wave quality assessment, wind effects, tide timing, and specific spot recommendations."),
+  boardRecommendation: z.string()
+    .describe("Specific board type and size recommendation (e.g., '9'2\" longboard', '6'4\" funboard', 'shortboard 6'0\"')"),
+  skillLevel: z.enum(['beginner', 'intermediate', 'advanced'])
+    .describe("Recommended minimum skill level for current conditions"),
+  bestSpots: z.array(z.string())
+    .max(3)
+    .optional()
+    .describe("Top 2-3 specific St. Augustine surf spots for these conditions"),
+  timingAdvice: z.string()
+    .optional()
+    .describe("Specific timing advice for best surf windows or when conditions might improve")
 })
 
 // CORS headers
@@ -116,6 +127,72 @@ function handleHealth(): Response {
   }
 }
 
+// IMPROVED PROMPT GENERATION
+function createDetailedPrompt(surfData: any): string {
+  const { details, weather, score, location } = surfData
+  
+  // Get time of day for context
+  const now = new Date()
+  const etTime = now.toLocaleString("en-US", {timeZone: "America/New_York"})
+  const hour = new Date(etTime).getHours()
+  const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening'
+  
+  // Determine wind effect
+  const windEffect = details.wind_speed_kts < 5 ? 'glassy' : 
+                    details.wind_speed_kts < 10 ? 'light texture' :
+                    details.wind_speed_kts < 15 ? 'bumpy' : 'blown out'
+  
+  // Assess wave quality
+  const waveQuality = score >= 80 ? 'firing' :
+                     score >= 65 ? 'solid' :
+                     score >= 45 ? 'rideable' : 'pretty mellow'
+
+  return `You are a knowledgeable local St. Augustine surfer writing a detailed surf report for fellow surfers. Write a comprehensive 2-3 paragraph report that captures the authentic voice of someone who surfs these waters daily.
+
+CURRENT CONDITIONS (${timeOfDay}):
+• Location: ${location}
+• Wave Height: ${details.wave_height_ft} feet
+• Wave Period: ${details.wave_period_sec} seconds (${details.wave_period_sec >= 10 ? 'long period groundswell' : details.wave_period_sec >= 7 ? 'decent period' : 'short period wind waves'})
+• Swell Direction: ${details.swell_direction_deg}° (${getSwellDirection(details.swell_direction_deg)})
+• Wind: ${details.wind_speed_kts} knots from ${details.wind_direction_deg}° (${getWindDirection(details.wind_direction_deg)} - ${windEffect})
+• Tide: ${details.tide_state} at ${details.tide_height_ft} feet
+• Air Temperature: ${weather.air_temperature_f}°F
+• Water Temperature: ${weather.water_temperature_f}°F  
+• Weather: ${weather.weather_description}
+• Overall Score: ${score}/100 (${waveQuality})
+
+WRITING REQUIREMENTS:
+1. FIRST PARAGRAPH: Open with an authentic greeting and overall assessment. Describe the wave quality, size, and shape. Mention how the ${details.wave_period_sec}-second period is affecting the waves. Discuss what the ${details.swell_direction_deg}° swell direction means for different spots around St. Augustine.
+
+2. SECOND PARAGRAPH: Detail the wind conditions (${details.wind_speed_kts} kts from ${details.wind_direction_deg}°) and how they're affecting the water surface. Explain the tide situation (${details.tide_state} at ${details.tide_height_ft}ft) and how it's impacting wave quality and accessibility. Mention water temperature (${weather.water_temperature_f}°F) and any wetsuit considerations.
+
+3. THIRD PARAGRAPH: Give specific recommendations for the best spots around St. Augustine (Vilano Beach, St. Augustine Pier, Anastasia State Park, etc.) based on current conditions. Suggest appropriate board choice and skill level. Include timing advice if conditions are expected to change.
+
+VOICE & STYLE:
+- Write like a stoked local who knows every break
+- Use authentic surf terminology but keep it accessible  
+- Be honest about conditions - don't oversell poor waves
+- Include specific local knowledge about how wind/tide affects different spots
+- Maintain enthusiasm even for smaller days
+- Use natural conversational flow, not stilted or overly technical
+
+Make this feel like a report from someone who just checked the waves and is genuinely sharing what they saw with fellow surfers.`
+}
+
+function getSwellDirection(degrees: number): string {
+  if (degrees >= 315 || degrees < 45) return 'North'
+  if (degrees >= 45 && degrees < 135) return 'East'  
+  if (degrees >= 135 && degrees < 225) return 'South'
+  return 'West'
+}
+
+function getWindDirection(degrees: number): string {
+  if (degrees >= 315 || degrees < 45) return 'North'
+  if (degrees >= 45 && degrees < 135) return 'East'
+  if (degrees >= 135 && degrees < 225) return 'South'  
+  return 'West'
+}
+
 async function handleGenerateSurfReport(req: Request): Promise<Response> {
   const startTime = Bun.nanoseconds()
   
@@ -139,28 +216,25 @@ async function handleGenerateSurfReport(req: Request): Promise<Response> {
     if (!surfData) {
       return jsonResponse({ error: 'Missing surf data' }, 400)
     }
-    
-    const prompt = `St. Augustine surf report:
 
-CONDITIONS:
-- Waves: ${surfData.details.wave_height_ft}ft @ ${surfData.details.wave_period_sec}s
-- Wind: ${surfData.details.wind_speed_kts}kts from ${surfData.details.wind_direction_deg}°  
-- Tide: ${surfData.details.tide_state} (${surfData.details.tide_height_ft}ft)
-- Air: ${surfData.weather.air_temperature_f}°F | Water: ${surfData.weather.water_temperature_f}°F
-- Score: ${surfData.score}/100
-
-Write a conversational 2-3 paragraph surf report as a local surfer. Include wave quality, wind effects, tide timing, board suggestions, and best St. Augustine spots (Vilano, Pier, Anastasia). Keep it authentic Florida East Coast style.`
+    // IMPROVED: Use detailed prompt
+    const prompt = createDetailedPrompt(surfData)
 
     const aiStart = Bun.nanoseconds()
     const { object: aiResponse } = await generateObject({
       model: openai('gpt-4o-mini'),
       schema: surfReportSchema,
       prompt,
-      temperature: 0.6,
-      maxTokens: 350,
+      temperature: 0.7,  // Increased for more creative/varied responses
+      maxTokens: 600,    // Increased token limit
     })
     
     const aiTime = (Bun.nanoseconds() - aiStart) / 1_000_000
+    
+    // Validate report length
+    if (aiResponse.report.length < 250) {
+      console.warn(`⚠️ Short report generated: ${aiResponse.report.length} characters`)
+    }
     
     const report = {
       id: `surf_bun_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
@@ -186,13 +260,15 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
       generation_meta: {
         generation_time_ms: Math.round(aiTime),
         total_time_ms: Math.round((Bun.nanoseconds() - startTime) / 1_000_000),
-        backend: 'pure-bun-ultra',
-        model: 'gpt-4o-mini'
+        backend: 'pure-bun-ultra-v2',
+        model: 'gpt-4o-mini',
+        report_length: aiResponse.report.length,
+        prompt_tokens: Math.ceil(prompt.length / 4) // Rough estimate
       }
     }
     
     const totalTime = (Bun.nanoseconds() - startTime) / 1_000_000
-    console.log(`⚡ Pure Bun AI: ${Math.round(aiTime)}ms total: ${Math.round(totalTime)}ms`)
+    console.log(`⚡ Pure Bun AI: ${Math.round(aiTime)}ms total: ${Math.round(totalTime)}ms (${aiResponse.report.length} chars)`)
     
     return jsonResponse({
       success: true,
@@ -200,7 +276,12 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
       performance: {
         ai_generation_ms: Math.round(aiTime),
         total_time_ms: Math.round(totalTime),
-        runtime: 'pure-bun'
+        runtime: 'pure-bun',
+        report_quality: {
+          length: aiResponse.report.length,
+          meets_minimum: aiResponse.report.length >= 250,
+          target_range: '300-800 characters'
+        }
       }
     })
     
@@ -236,7 +317,7 @@ async function handleCronGeneration(req: Request): Promise<Response> {
     if (cronSecret !== process.env.CRON_SECRET) {
       return jsonResponse({ error: 'Unauthorized' }, 401)
     }
-    
+
     console.log('🌊 Fetching surf data...')
     const surfDataResponse = await fetch(`${vercelUrl}/api/surfability`, {
       headers: { 'User-Agent': 'Pure-Bun-Ultra/1.0' },
@@ -250,25 +331,18 @@ async function handleCronGeneration(req: Request): Promise<Response> {
     const surfData = await surfDataResponse.json()
     console.log('📊 Got surf data:', surfData.location)
     
-    // Generate AI report directly
-    console.log('🤖 Generating AI report...')
+    // Generate AI report with improved prompt
+    console.log('🤖 Generating detailed AI report...')
     const aiStart = Bun.nanoseconds()
+    
+    const prompt = createDetailedPrompt(surfData)
     
     const { object: aiResponse } = await generateObject({
       model: openai('gpt-4o-mini'),
       schema: surfReportSchema,
-      prompt: `St. Augustine surf report:
-
-CONDITIONS:
-- Waves: ${surfData.details.wave_height_ft}ft @ ${surfData.details.wave_period_sec}s
-- Wind: ${surfData.details.wind_speed_kts}kts from ${surfData.details.wind_direction_deg}°  
-- Tide: ${surfData.details.tide_state} (${surfData.details.tide_height_ft}ft)
-- Air: ${surfData.weather.air_temperature_f}°F | Water: ${surfData.weather.water_temperature_f}°F
-- Score: ${surfData.score}/100
-
-Write a conversational 2-3 paragraph surf report as a local surfer. Include wave quality, wind effects, tide timing, board suggestions, and best St. Augustine spots (Vilano, Pier, Anastasia). Keep it authentic Florida East Coast style.`,
-      temperature: 0.6,
-      maxTokens: 350,
+      prompt,
+      temperature: 0.7,
+      maxTokens: 600,
     })
     
     const aiTime = (Bun.nanoseconds() - aiStart) / 1_000_000
@@ -298,12 +372,13 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
       generation_meta: {
         generation_time_ms: Math.round(aiTime),
         total_time_ms: Math.round((Bun.nanoseconds() - startTime) / 1_000_000),
-        backend: 'pure-bun-ultra',
-        model: 'gpt-4o-mini'
+        backend: 'pure-bun-ultra-v2',
+        model: 'gpt-4o-mini',
+        report_length: aiResponse.report.length
       }
     }
     
-    console.log('✅ AI report generated:', report.id)
+    console.log(`✅ AI report generated: ${report.id} (${aiResponse.report.length} chars)`)
     
     // Save to Vercel (async, non-blocking)
     fetch(`${vercelUrl}/api/admin/save-report`, {
@@ -320,7 +395,7 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
     return jsonResponse({
       success: true,
       timestamp: new Date().toISOString(),
-      backend: 'pure-bun-ultra',
+      backend: 'pure-bun-ultra-v2',
       performance: {
         total_time_ms: Math.round(totalTime),
         ai_generation_ms: Math.round(aiTime),
@@ -331,7 +406,11 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
         surf_data_fetched: true,
         ai_report_generated: true,
         report_saved_async: true,
-        new_report_id: report.id
+        new_report_id: report.id,
+        report_quality: {
+          length: aiResponse.report.length,
+          meets_minimum: aiResponse.report.length >= 250
+        }
       }
     })
     
@@ -385,4 +464,4 @@ serve({
 })
 
 console.log(`✅ Pure Bun server running at http://localhost:${port}`)
-console.log(`🏄‍♂️ Ready to generate surf reports with maximum performance!`)
+console.log(`🏄‍♂️ Ready to generate detailed surf reports with maximum performance!`)
