@@ -137,10 +137,13 @@ function createDetailedPrompt(surfData: any): string {
   const hour = new Date(etTime).getHours()
   const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening'
   
-  // Determine wind effect
-  const windEffect = details.wind_speed_kts < 5 ? 'glassy' : 
-                    details.wind_speed_kts < 10 ? 'light texture' :
-                    details.wind_speed_kts < 15 ? 'bumpy' : 'blown out'
+  // Convert knots to MPH for user-friendly display
+  const windSpeedMph = Math.round(details.wind_speed_kts * 1.15078) // 1 knot = 1.15078 mph
+  
+  // Determine wind effect (using MPH thresholds)
+  const windEffect = windSpeedMph < 6 ? 'glassy' : 
+                    windSpeedMph < 12 ? 'light texture' :
+                    windSpeedMph < 17 ? 'bumpy' : 'blown out'
   
   // Assess wave quality
   const waveQuality = score >= 80 ? 'firing' :
@@ -154,7 +157,7 @@ CURRENT CONDITIONS (${timeOfDay}):
 • Wave Height: ${details.wave_height_ft} feet
 • Wave Period: ${details.wave_period_sec} seconds (${details.wave_period_sec >= 10 ? 'long period groundswell' : details.wave_period_sec >= 7 ? 'decent period' : 'short period wind waves'})
 • Swell Direction: ${details.swell_direction_deg}° (${getSwellDirection(details.swell_direction_deg)})
-• Wind: ${details.wind_speed_kts} knots from ${details.wind_direction_deg}° (${getWindDirection(details.wind_direction_deg)} - ${windEffect})
+• Wind: ${windSpeedMph} mph from ${details.wind_direction_deg}° (${getWindDirection(details.wind_direction_deg)} - ${windEffect})
 • Tide: ${details.tide_state} at ${details.tide_height_ft} feet
 • Air Temperature: ${weather.air_temperature_f}°F
 • Water Temperature: ${weather.water_temperature_f}°F  
@@ -164,7 +167,7 @@ CURRENT CONDITIONS (${timeOfDay}):
 WRITING REQUIREMENTS:
 1. FIRST PARAGRAPH: Open with an authentic greeting and overall assessment. Describe the wave quality, size, and shape. Mention how the ${details.wave_period_sec}-second period is affecting the waves. Discuss what the ${details.swell_direction_deg}° swell direction means for different spots around St. Augustine.
 
-2. SECOND PARAGRAPH: Detail the wind conditions (${details.wind_speed_kts} kts from ${details.wind_direction_deg}°) and how they're affecting the water surface. Explain the tide situation (${details.tide_state} at ${details.tide_height_ft}ft) and how it's impacting wave quality and accessibility. Mention water temperature (${weather.water_temperature_f}°F) and any wetsuit considerations.
+2. SECOND PARAGRAPH: Detail the wind conditions (${windSpeedMph} mph from ${details.wind_direction_deg}°) and how they're affecting the water surface. Explain the tide situation (${details.tide_state} at ${details.tide_height_ft}ft) and how it's impacting wave quality and accessibility. Mention water temperature (${weather.water_temperature_f}°F) and any wetsuit considerations.
 
 3. THIRD PARAGRAPH: Give specific recommendations for the best spots around St. Augustine (Vilano Beach, St. Augustine Pier, Anastasia State Park, etc.) based on current conditions. Suggest appropriate board choice and skill level. Include timing advice if conditions are expected to change.
 
@@ -175,6 +178,7 @@ VOICE & STYLE:
 - Include specific local knowledge about how wind/tide affects different spots
 - Maintain enthusiasm even for smaller days
 - Use natural conversational flow, not stilted or overly technical
+- IMPORTANT: Always use mph for wind speeds, never knots - this is more familiar to everyday users
 
 Make this feel like a report from someone who just checked the waves and is genuinely sharing what they saw with fellow surfers.`
 }
