@@ -3,21 +3,24 @@ import { generateObject } from 'ai'
 import { openai } from '@ai-sdk/openai'
 import { z } from 'zod'
 
-// IMPROVED SCHEMA - More detailed constraints
+// IMPROVED SCHEMA - More flexible constraints to prevent validation failures
 const surfReportSchema = z.object({
   report: z.string()
-    .min(300)  // Minimum 300 characters
-    .max(800)  // Maximum 800 characters  
+    .min(200)  // Reduced minimum to be more flexible
+    .max(1000) // Increased maximum for longer reports
     .describe("Detailed 2-3 paragraph surf report in authentic local St. Augustine surfer voice. Include wave quality assessment, wind effects, tide timing, and specific spot recommendations."),
   boardRecommendation: z.string()
+    .min(5)    // Ensure we get something meaningful
     .describe("Specific board type and size recommendation (e.g., '9'2\" longboard', '6'4\" funboard', 'shortboard 6'0\"')"),
   skillLevel: z.enum(['beginner', 'intermediate', 'advanced'])
     .describe("Recommended minimum skill level for current conditions"),
   bestSpots: z.array(z.string())
-    .max(3)
+    .min(1)    // At least one spot
+    .max(4)    // Max 4 spots
     .optional()
     .describe("Top 2-3 specific St. Augustine surf spots for these conditions"),
   timingAdvice: z.string()
+    .min(10)   // Ensure meaningful advice
     .optional()
     .describe("Specific timing advice for best surf windows or when conditions might improve")
 })
@@ -225,15 +228,58 @@ async function handleGenerateSurfReport(req: Request): Promise<Response> {
     const prompt = createDetailedPrompt(surfData)
 
     const aiStart = Bun.nanoseconds()
-    const { object: aiResponse } = await generateObject({
-      model: openai('gpt-4o-mini'),
-      schema: surfReportSchema,
-      prompt,
-      temperature: 0.7,  // Increased for more creative/varied responses
-      maxTokens: 600,    // Increased token limit
-    })
     
-    const aiTime = (Bun.nanoseconds() - aiStart) / 1_000_000
+    try {
+      const { object: aiResponse } = await generateObject({
+        model: openai('gpt-4o-mini'),
+        schema: surfReportSchema,
+        prompt,
+        temperature: 0.6,  // Reduced from 0.7 for more consistent responses
+        maxTokens: 700,    // Increased token limit
+      })
+      
+      const aiTime = (Bun.nanoseconds() - aiStart) / 1_000_000
+      
+      // Validate response before proceeding
+      if (!aiResponse.report || aiResponse.report.length < 150) {
+        throw new Error(`Generated report too short: ${aiResponse.report?.length || 0} characters`)
+      }
+      
+      if (!aiResponse.boardRecommendation) {
+        throw new Error('Missing board recommendation')
+      }
+      
+      console.log(`✅ AI validation passed: ${aiResponse.report.length} chars, board: ${aiResponse.boardRecommendation}`)
+      
+    } catch (aiError) {
+      console.error('❌ AI generation or validation failed:', aiError)
+      
+      // Fallback: Try with simpler prompt and more relaxed parameters
+      console.log('🔄 Attempting fallback generation...')
+      
+      const fallbackPrompt = `Write a 2-3 paragraph surf report for St. Augustine, FL with these conditions:
+      
+Waves: ${surfData.details.wave_height_ft}ft at ${surfData.details.wave_period_sec}s period
+Wind: ${Math.round(surfData.details.wind_speed_kts * 1.15078)} mph from ${getWindDirection(surfData.details.wind_direction_deg)}
+Tide: ${surfData.details.tide_state} at ${surfData.details.tide_height_ft}ft
+Water: ${surfData.weather.water_temperature_f}°F
+Score: ${surfData.score}/100
+
+Write in a friendly, local surfer voice. Include wave assessment, wind effects, and board/spot recommendations.`
+
+      const { object: fallbackResponse } = await generateObject({
+        model: openai('gpt-4o-mini'),
+        schema: surfReportSchema,
+        prompt: fallbackPrompt,
+        temperature: 0.4,  // Lower temperature for more reliable output
+        maxTokens: 500,
+      })
+      
+      const aiTime = (Bun.nanoseconds() - aiStart) / 1_000_000
+      const aiResponse = fallbackResponse
+      
+      console.log(`🔄 Fallback generation successful: ${aiResponse.report.length} chars`)
+    }
     
     // Validate report length
     if (aiResponse.report.length < 250) {
@@ -335,54 +381,123 @@ async function handleCronGeneration(req: Request): Promise<Response> {
     const surfData = await surfDataResponse.json()
     console.log('📊 Got surf data:', surfData.location)
     
-    // Generate AI report with improved prompt
+    // Generate AI report with improved prompt and fallback
     console.log('🤖 Generating detailed AI report...')
     const aiStart = Bun.nanoseconds()
     
     const prompt = createDetailedPrompt(surfData)
     
-    const { object: aiResponse } = await generateObject({
-      model: openai('gpt-4o-mini'),
-      schema: surfReportSchema,
-      prompt,
-      temperature: 0.7,
-      maxTokens: 600,
-    })
-    
-    const aiTime = (Bun.nanoseconds() - aiStart) / 1_000_000
-    
-    // Create the report object
-    const report = {
-      id: `surf_bun_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      timestamp: new Date().toISOString(),
-      location: surfData.location,
-      report: aiResponse.report,
-      conditions: {
-        wave_height_ft: surfData.details.wave_height_ft,
-        wave_period_sec: surfData.details.wave_period_sec,
-        wind_speed_kts: surfData.details.wind_speed_kts,
-        wind_direction_deg: surfData.details.wind_direction_deg,
-        tide_state: surfData.details.tide_state,
-        weather_description: surfData.weather.weather_description,
-        surfability_score: surfData.score
-      },
-      recommendations: {
-        board_type: aiResponse.boardRecommendation,
-        skill_level: aiResponse.skillLevel,
-        best_spots: aiResponse.bestSpots,
-        timing_advice: aiResponse.timingAdvice
-      },
-      cached_until: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
-      generation_meta: {
-        generation_time_ms: Math.round(aiTime),
-        total_time_ms: Math.round((Bun.nanoseconds() - startTime) / 1_000_000),
-        backend: 'pure-bun-ultra-v2',
-        model: 'gpt-4o-mini',
-        report_length: aiResponse.report.length
+    try {
+      const { object: aiResponse } = await generateObject({
+        model: openai('gpt-4o-mini'),
+        schema: surfReportSchema,
+        prompt,
+        temperature: 0.6,
+        maxTokens: 700,
+      })
+      
+      const aiTime = (Bun.nanoseconds() - aiStart) / 1_000_000
+      
+      // Validate response
+      if (!aiResponse.report || aiResponse.report.length < 150) {
+        throw new Error(`Generated report too short: ${aiResponse.report?.length || 0} characters`)
       }
+      
+      console.log(`✅ AI generation successful: ${aiResponse.report.length} chars`)
+      
+      // Create the report object
+      const report = {
+        id: `surf_bun_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        timestamp: new Date().toISOString(),
+        location: surfData.location,
+        report: aiResponse.report,
+        conditions: {
+          wave_height_ft: surfData.details.wave_height_ft,
+          wave_period_sec: surfData.details.wave_period_sec,
+          wind_speed_kts: surfData.details.wind_speed_kts,
+          wind_direction_deg: surfData.details.wind_direction_deg,
+          tide_state: surfData.details.tide_state,
+          weather_description: surfData.weather.weather_description,
+          surfability_score: surfData.score
+        },
+        recommendations: {
+          board_type: aiResponse.boardRecommendation,
+          skill_level: aiResponse.skillLevel,
+          best_spots: aiResponse.bestSpots || ['Vilano Beach', 'St. Augustine Pier'],
+          timing_advice: aiResponse.timingAdvice || 'Check conditions throughout the day'
+        },
+        cached_until: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+        generation_meta: {
+          generation_time_ms: Math.round(aiTime),
+          total_time_ms: Math.round((Bun.nanoseconds() - startTime) / 1_000_000),
+          backend: 'pure-bun-ultra-v2',
+          model: 'gpt-4o-mini',
+          report_length: aiResponse.report.length,
+          generation_method: 'primary'
+        }
+      }
+      
+      console.log(`✅ AI report generated: ${report.id} (${aiResponse.report.length} chars)`)
+      
+    } catch (aiError) {
+      console.error('❌ Primary AI generation failed:', aiError)
+      console.log('🔄 Attempting fallback generation...')
+      
+      // Fallback with simpler prompt
+      const fallbackPrompt = `Write a surf report for St. Augustine, FL:
+      
+Waves: ${surfData.details.wave_height_ft}ft, ${surfData.details.wave_period_sec}s period
+Wind: ${Math.round(surfData.details.wind_speed_kts * 1.15078)} mph ${getWindDirection(surfData.details.wind_direction_deg)}
+Tide: ${surfData.details.tide_state}, ${surfData.details.tide_height_ft}ft
+Water: ${surfData.weather.water_temperature_f}°F
+Overall: ${surfData.score}/100
+
+Write 2-3 paragraphs in a friendly surfer voice covering wave quality, conditions, and recommendations.`
+
+      const { object: fallbackResponse } = await generateObject({
+        model: openai('gpt-4o-mini'),
+        schema: surfReportSchema,
+        prompt: fallbackPrompt,
+        temperature: 0.4,
+        maxTokens: 500,
+      })
+      
+      const aiTime = (Bun.nanoseconds() - aiStart) / 1_000_000
+      
+      // Create report with fallback data
+      const report = {
+        id: `surf_bun_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        timestamp: new Date().toISOString(),
+        location: surfData.location,
+        report: fallbackResponse.report,
+        conditions: {
+          wave_height_ft: surfData.details.wave_height_ft,
+          wave_period_sec: surfData.details.wave_period_sec,
+          wind_speed_kts: surfData.details.wind_speed_kts,
+          wind_direction_deg: surfData.details.wind_direction_deg,
+          tide_state: surfData.details.tide_state,
+          weather_description: surfData.weather.weather_description,
+          surfability_score: surfData.score
+        },
+        recommendations: {
+          board_type: fallbackResponse.boardRecommendation,
+          skill_level: fallbackResponse.skillLevel,
+          best_spots: fallbackResponse.bestSpots || ['Vilano Beach', 'St. Augustine Pier'],
+          timing_advice: fallbackResponse.timingAdvice || 'Check conditions regularly'
+        },
+        cached_until: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+        generation_meta: {
+          generation_time_ms: Math.round(aiTime),
+          total_time_ms: Math.round((Bun.nanoseconds() - startTime) / 1_000_000),
+          backend: 'pure-bun-ultra-v2',
+          model: 'gpt-4o-mini',
+          report_length: fallbackResponse.report.length,
+          generation_method: 'fallback'
+        }
+      }
+      
+      console.log(`🔄 Fallback generation successful: ${report.id} (${fallbackResponse.report.length} chars)`)
     }
-    
-    console.log(`✅ AI report generated: ${report.id} (${aiResponse.report.length} chars)`)
     
     // Save to Vercel (async, non-blocking)
     fetch(`${vercelUrl}/api/admin/save-report`, {
