@@ -1,17 +1,7 @@
 import { serve } from "bun"
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
 import { generateObject } from 'ai'
 import { openai } from '@ai-sdk/openai'
 import { z } from 'zod'
-
-const app = new Hono()
-
-app.use('*', cors({
-  origin: ['https://surf-report-rouge.vercel.app', 'http://localhost:3000'],
-  allowMethods: ['GET', 'POST', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
-}))
 
 const surfReportSchema = z.object({
   report: z.string().max(600).describe("Concise surf report in local voice"),
@@ -21,31 +11,88 @@ const surfReportSchema = z.object({
   timingAdvice: z.string().optional().describe("Timing tip")
 })
 
-app.get('/health', (c) => {
-  return c.json({
-    status: 'ok',
-    service: 'Surf Lab AI (Bun+Hono)',
-    timestamp: new Date().toISOString(),
-    runtime: 'Bun', 
-    framework: 'Hono',
-    performance: 'maximum'
-  })
-})
+// CORS headers
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Max-Age': '86400'
+}
 
-app.post('/generate-surf-report', async (c) => {
+// Helper to create JSON response with CORS
+function jsonResponse(data: any, status = 200, additionalHeaders = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders,
+      ...additionalHeaders
+    }
+  })
+}
+
+// Helper to handle CORS preflight
+function corsResponse() {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders
+  })
+}
+
+// Main request handler
+async function handleRequest(req: Request): Promise<Response> {
+  const url = new URL(req.url)
+  const method = req.method
+  
+  // Handle CORS preflight
+  if (method === 'OPTIONS') {
+    return corsResponse()
+  }
+  
+  // Route handlers
+  if (method === 'GET' && url.pathname === '/health') {
+    return handleHealth()
+  }
+  
+  if (method === 'POST' && url.pathname === '/generate-surf-report') {
+    return handleGenerateSurfReport(req)
+  }
+  
+  if (method === 'POST' && url.pathname === '/cron/generate-fresh-report') {
+    return handleCronGeneration(req)
+  }
+  
+  // 404 handler
+  return jsonResponse({ error: 'Not found' }, 404)
+}
+
+function handleHealth(): Response {
+  return jsonResponse({
+    status: 'ok',
+    service: 'Surf Lab AI (Pure Bun)',
+    timestamp: new Date().toISOString(),
+    runtime: 'Bun',
+    framework: 'Native',
+    performance: 'maximum',
+    version: Bun.version
+  })
+}
+
+async function handleGenerateSurfReport(req: Request): Promise<Response> {
   const startTime = Bun.nanoseconds()
   
   try {
-    console.log('🤖 AI generation request (Bun+Hono)')
+    console.log('🤖 AI generation request (Pure Bun)')
     
-    const { surfData, apiKey } = await c.req.json()
+    const body = await req.json()
+    const { surfData, apiKey } = body
     
     if (apiKey !== process.env.API_SECRET) {
-      return c.json({ error: 'Unauthorized' }, 401)
+      return jsonResponse({ error: 'Unauthorized' }, 401)
     }
     
     if (!surfData) {
-      return c.json({ error: 'Missing surf data' }, 400)
+      return jsonResponse({ error: 'Missing surf data' }, 400)
     }
     
     const prompt = `St. Augustine surf report:
@@ -94,52 +141,53 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
       generation_meta: {
         generation_time_ms: Math.round(aiTime),
         total_time_ms: Math.round((Bun.nanoseconds() - startTime) / 1_000_000),
-        backend: 'bun-hono-ultra',
+        backend: 'pure-bun-ultra',
         model: 'gpt-4o-mini'
       }
     }
     
     const totalTime = (Bun.nanoseconds() - startTime) / 1_000_000
-    console.log(`⚡ Bun+Hono AI: ${Math.round(aiTime)}ms total: ${Math.round(totalTime)}ms`)
+    console.log(`⚡ Pure Bun AI: ${Math.round(aiTime)}ms total: ${Math.round(totalTime)}ms`)
     
-    return c.json({
+    return jsonResponse({
       success: true,
       report,
       performance: {
         ai_generation_ms: Math.round(aiTime),
         total_time_ms: Math.round(totalTime),
-        runtime: 'bun'
+        runtime: 'pure-bun'
       }
     })
     
   } catch (error) {
     const errorTime = (Bun.nanoseconds() - startTime) / 1_000_000
-    console.error('❌ Bun+Hono generation failed:', error)
+    console.error('❌ Pure Bun generation failed:', error)
     
-    return c.json({
+    return jsonResponse({
       success: false,
       error: 'AI generation failed',
       details: error instanceof Error ? error.message : 'Unknown error',
       duration_ms: Math.round(errorTime)
     }, 500)
   }
-})
+}
 
-app.post('/cron/generate-fresh-report', async (c) => {
+async function handleCronGeneration(req: Request): Promise<Response> {
   const startTime = Bun.nanoseconds()
   
   try {
-    console.log('🕐 Bun+Hono cron generation started')
+    console.log('🕐 Pure Bun cron generation started')
     
-    const { cronSecret, vercelUrl } = await c.req.json()
+    const body = await req.json()
+    const { cronSecret, vercelUrl } = body
     
     if (cronSecret !== process.env.CRON_SECRET) {
-      return c.json({ error: 'Unauthorized' }, 401)
+      return jsonResponse({ error: 'Unauthorized' }, 401)
     }
     
     console.log('🌊 Fetching surf data...')
     const surfDataResponse = await fetch(`${vercelUrl}/api/surfability`, {
-      headers: { 'User-Agent': 'Bun-Hono-Ultra/1.0' },
+      headers: { 'User-Agent': 'Pure-Bun-Ultra/1.0' },
       signal: AbortSignal.timeout(10000)
     })
     
@@ -150,7 +198,7 @@ app.post('/cron/generate-fresh-report', async (c) => {
     const surfData = await surfDataResponse.json()
     console.log('📊 Got surf data:', surfData.location)
     
-    // FIXED: Generate AI report directly instead of calling ourselves
+    // Generate AI report directly
     console.log('🤖 Generating AI report...')
     const aiStart = Bun.nanoseconds()
     
@@ -198,7 +246,7 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
       generation_meta: {
         generation_time_ms: Math.round(aiTime),
         total_time_ms: Math.round((Bun.nanoseconds() - startTime) / 1_000_000),
-        backend: 'bun-hono-ultra',
+        backend: 'pure-bun-ultra',
         model: 'gpt-4o-mini'
       }
     }
@@ -217,15 +265,15 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
     
     const totalTime = (Bun.nanoseconds() - startTime) / 1_000_000
     
-    return c.json({
+    return jsonResponse({
       success: true,
       timestamp: new Date().toISOString(),
-      backend: 'bun-hono-ultra',
+      backend: 'pure-bun-ultra',
       performance: {
         total_time_ms: Math.round(totalTime),
         ai_generation_ms: Math.round(aiTime),
-        runtime: 'bun',
-        framework: 'hono'
+        runtime: 'pure-bun',
+        framework: 'native'
       },
       actions: {
         surf_data_fetched: true,
@@ -237,39 +285,53 @@ Write a conversational 2-3 paragraph surf report as a local surfer. Include wave
     
   } catch (error) {
     const errorTime = (Bun.nanoseconds() - startTime) / 1_000_000
-    console.error('❌ Bun cron failed:', error)
+    console.error('❌ Pure Bun cron failed:', error)
     
-    return c.json({
+    return jsonResponse({
       success: false,
-      error: 'Bun cron failed',
+      error: 'Pure Bun cron failed',
       details: error instanceof Error ? error.message : 'Unknown error',
       duration_ms: Math.round(errorTime)
     }, 500)
   }
-})
+}
 
-app.notFound((c) => {
-  return c.json({ error: 'Not found' }, 404)
-})
-
-app.onError((err, c) => {
-  console.error('🚨 Bun+Hono error:', err)
-  return c.json({
+// Global error handler
+function handleError(error: Error): Response {
+  console.error('🚨 Pure Bun error:', error)
+  return jsonResponse({
     error: 'Internal server error',
-    details: err.message
+    details: error.message,
+    timestamp: new Date().toISOString()
   }, 500)
-})
+}
 
+// Server configuration
 const port = parseInt(process.env.PORT || '3001')
 
-console.log(`🚀 Bun+Hono Surf Lab starting on port ${port}`)
+console.log(`🚀 Pure Bun Surf Lab starting on port ${port}`)
 console.log(`⚡ Runtime: Bun ${Bun.version}`)
 console.log(`🔗 Health: http://localhost:${port}/health`)
+console.log(`🌊 Framework: Native Bun (no dependencies)`)
 
-export default serve({
-  fetch: app.fetch,
+// Start the server
+const server = serve({
   port,
   development: process.env.NODE_ENV === 'development',
+  async fetch(req) {
+    try {
+      return await handleRequest(req)
+    } catch (error) {
+      return handleError(error as Error)
+    }
+  },
+  error(error) {
+    console.error('🚨 Server error:', error)
+    return new Response('Internal Server Error', { status: 500 })
+  }
 })
 
-console.log(`✅ Server running at http://localhost:${port}`)
+console.log(`✅ Pure Bun server running at http://localhost:${port}`)
+console.log(`🏄‍♂️ Ready to generate surf reports with maximum performance!`)
+
+export default server

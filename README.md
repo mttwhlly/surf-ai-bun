@@ -1,15 +1,17 @@
-# surf-ai-bun-hono
+# Surf AI Backend (Pure Bun)
 
-To install dependencies:
+Ultra-fast AI backend for surf report generation using pure Bun runtime.
 
-```bash
-bun install
-```
+## Deployment
 
-To run:
+- Runtime: Bun
+- Port: 3001
+- Health Check: /health
 
-```bash
-bun run index.ts
-```
+## Environment Variables Required
 
-This project was created using `bun init` in bun v1.2.19. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+- OPENAI_API_KEY
+- API_SECRET  
+- CRON_SECRET
+- NODE_ENV=production
+- PORT=3001
