@@ -1,29 +1,39 @@
-FROM oven/bun:1-alpine
+# Use Bun's official Docker image
+FROM oven/bun:1.1.29-alpine
 
-# Install curl for health checks
-RUN apk add --no-cache curl
-
+# Set working directory
 WORKDIR /app
+
+# Install curl for healthchecks (Coolify requirement)
+RUN apk add --no-cache curl
 
 # Copy package files
 COPY package.json bun.lockb* ./
 
 # Install dependencies
-RUN bun install --production
+RUN bun install --frozen-lockfile --production
 
 # Copy source code
 COPY . .
 
-# Create non-root user
-RUN adduser -S bunuser
-USER bunuser
+# Create non-root user for security
+RUN addgroup -g 1001 -S bun && \
+    adduser -S bun -u 1001
 
-# Expose port
-EXPOSE 3001
+# Change ownership of app directory
+RUN chown -R bun:bun /app
+USER bun
 
-# Health check
-HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:3001/health || exit 1
+# Expose port 3000 (default for Coolify)
+EXPOSE 3000
 
-# Start server
-CMD ["bun", "run", "src/server.ts"]
+# Environment variables
+ENV NODE_ENV=production
+ENV PORT=3000
+
+# Health check for Coolify
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:3000/health || exit 1
+
+# Start the application
+CMD ["bun", "run", "index.ts"]
