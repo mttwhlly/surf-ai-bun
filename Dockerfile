@@ -16,11 +16,8 @@ RUN bun install --frozen-lockfile --production
 # Copy source code
 COPY . .
 
-# Create non-root user for security
-RUN addgroup -g 1001 -S bun && \
-    adduser -S bun -u 1001
-
-# Change ownership of app directory
+# The bun user already exists in the base image, just use it
+# Change ownership of app directory to existing bun user
 RUN chown -R bun:bun /app
 USER bun
 
