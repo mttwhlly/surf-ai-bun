@@ -1,15 +1,21 @@
-import { serve } from 'bun'
+import { serve } from "bun"
 import { generateObject } from 'ai'
 import { openai } from '@ai-sdk/openai'
 import { z } from 'zod'
 
-// MINIMAL SCHEMA - Should never fail
+// SIMPLIFIED SCHEMA
 const surfReportSchema = z.object({
-  report: z.string().min(30).describe("Surf report"),
-  boardRecommendation: z.string().min(3).describe("Board type"),
-  skillLevel: z.enum(['beginner', 'intermediate', 'advanced']).describe("Skill level"),
-  bestSpots: z.array(z.string()).optional().describe("Best spots"),
-  timingAdvice: z.string().optional().describe("Timing advice")
+  conditionsAnalysis: z.string().min(120).describe("First paragraph: Current wave, wind, and tide conditions with analysis"),
+  recommendationsAndOutlook: z.string().min(100).describe("Second paragraph: Spot recommendations, gear advice, and bottom line"),
+  
+  // Structured recommendations (for API consumers)
+  recommendations: z.object({
+    boardType: z.string().describe("Recommended board type with size"),
+    wetsuitThickness: z.string().optional().describe("Wetsuit recommendation"),
+    skillLevel: z.enum(['beginner', 'intermediate', 'advanced']).describe("Recommended skill level"),
+    bestSpots: z.array(z.string()).min(2).describe("Top 2-3 spot recommendations"),
+    timingAdvice: z.string().describe("Best timing for today's session")
+  })
 })
 
 // CORS headers
@@ -31,172 +37,177 @@ function corsResponse() {
   return new Response(null, { status: 204, headers: corsHeaders })
 }
 
-function createEnhancedPrompt(surfData: any): string {
-  // Extract all the key data we need
-  const waveHeight = surfData.details.wave_height_ft;
-  const wavePeriod = surfData.details.wave_period_sec; 
-  const swellDirection = surfData.details.swell_direction_deg; 
-  const windSpeed = Math.round(surfData.details.wind_speed_kts * 1.15078); // Convert to mph
-  const windDirection = surfData.details.wind_direction_deg; 
-  const tideState = surfData.details.tide_state;
-  const airTemp = Math.round(surfData.weather.air_temperature_f); 
-  const waterTemp = Math.round(surfData.weather.water_temperature_f); 
-  const weatherDesc = surfData.weather.weather_description;
-  const score = surfData.score;
+// PROMPT FUNCTION
+function createDetailedSurfPrompt(surfData: any): string {
+  const windMph = Math.round(surfData.details.wind_speed_kts * 1.15078)
+  const swellDirection = getSwellDirectionText(surfData.details.swell_direction_deg)
+  const windDirection = getWindDirectionText(surfData.details.wind_direction_deg)
   
-  // Convert directions to readable compass directions
-  const getCompassDirection = (degrees: number): string => {
-    const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
-    return directions[Math.round(degrees / 22.5) % 16];
-  };
-  
-  const swellDir = getCompassDirection(swellDirection);
-  const windDir = getCompassDirection(windDirection);
-  
-  // ✅ ENHANCED: Analyze swell quality based on period
-  const getSwellQuality = (period: number): string => {
-    if (period >= 12) return "long-period groundswell (high quality)";
-    if (period >= 10) return "solid mid-period swell (good quality)";
-    if (period >= 7) return "short-period swell (decent quality)";
-    return "wind swell (lower quality)";
-  };
-  
-  const swellQuality = getSwellQuality(wavePeriod);
-  
-  // ✅ ENHANCED: Wind analysis relative to swell
-  const analyzeWind = (windDir: string, swellDir: string, windSpeed: number): string => {
-    if (windSpeed < 5) return "light and clean";
-    if (windSpeed < 10) return `light ${windDir} winds`;
-    if (windSpeed < 15) return `moderate ${windDir} winds (${windSpeed} mph)`;
-    return `strong ${windDir} winds (${windSpeed} mph)`;
-  };
-  
-  const windAnalysis = analyzeWind(windDir, swellDir, windSpeed);
-  
-  return `Write a surf report for St. Augustine, FL as a local surfer would:
+  return `You are an experienced local surf forecaster for St. Augustine, Florida. Write a concise but detailed 2-paragraph surf report that gives surfers everything they need to know.
 
-Current conditions:
-- Waves: ${waveHeight} feet of ${swellQuality}
-- Wave period: ${wavePeriod} seconds from the ${swellDir}
-- Wind: ${windAnalysis}
-- Tide: ${tideState}
-- Air: ${airTemp}°F, Water: ${waterTemp}°F
-- Weather: ${weatherDesc}
-- Overall score: ${score}/100
+CURRENT CONDITIONS:
+• Wave Height: ${surfData.details.wave_height_ft} feet
+• Wave Period: ${surfData.details.wave_period_sec} seconds  
+• Swell Direction: ${surfData.details.swell_direction_deg}° (${swellDirection})
+• Wind: ${windMph} mph ${windDirection}
+• Tide: ${surfData.details.tide_state} (${surfData.details.tide_height_ft}ft)
+• Water Temp: ${surfData.weather.water_temperature_f}°F
+• Weather: ${surfData.weather.weather_description}
+• Overall Score: ${surfData.score}/100
 
-Write 2-3 paragraphs about:
-1. How the waves are looking and what the swell/wind is doing
-2. Board recommendations and best surf spots in the area
-3. Timing advice or any other local insights
+WRITE EXACTLY 2 PARAGRAPHS:
 
-Keep it conversational, friendly, and include the specific details about period, directions, and conditions. Write like you're talking to a friend who's asking about the surf.`;
+**Paragraph 1 - Conditions Analysis** (3-4 sentences):
+Start with current wave conditions (${surfData.details.wave_height_ft}ft at ${surfData.details.wave_period_sec}s). Analyze the wave quality and power. Discuss wind impact (${windMph} mph ${windDirection}). Mention tide state and water temperature.
+
+**Paragraph 2 - Recommendations & Outlook** (3-4 sentences):  
+Recommend specific St. Augustine spots (Vilano Beach, St. Aug Pier, Crescent Beach, etc.). Suggest board type and wetsuit for ${surfData.weather.water_temperature_f}°F water. Give timing advice and bottom line assessment.
+
+TONE: Conversational local surfer who knows the area well. Be honest about conditions - don't oversell poor surf. Use some surf slang but keep it readable.`
 }
 
-async function generateSurfReport(surfData: any) {
-  console.log('🤖 Generating enhanced surf report with complete data...');
-  
-  console.log('📊 Complete surf data for AI:', {
-    waves: `${surfData.details.wave_height_ft}ft @ ${surfData.details.wave_period_sec}s`,
-    swell: `${surfData.details.swell_direction_deg}° (${Math.round(surfData.details.swell_direction_deg/22.5)*22.5/22.5 > 8 ? 'offshore' : 'onshore'})`,
-    wind: `${Math.round(surfData.details.wind_speed_kts * 1.15)}mph from ${surfData.details.wind_direction_deg}°`,
-    tide: surfData.details.tide_state,
-    temps: `Air: ${Math.round(surfData.weather.air_temperature_f)}°F, Water: ${Math.round(surfData.weather.water_temperature_f)}°F`,
-    score: `${surfData.score}/100`
-  });
+// Helper functions for better context
+function getSwellDirectionText(degrees: number): string {
+  if (degrees >= 315 || degrees < 45) return 'North'
+  if (degrees >= 45 && degrees < 135) return 'East'
+  if (degrees >= 135 && degrees < 225) return 'South'
+  return 'West'
+}
+
+function getWindDirectionText(degrees: number): string {
+  const directions = ['North', 'NNE', 'NE', 'ENE', 'East', 'ESE', 'SE', 'SSE', 
+                     'South', 'SSW', 'SW', 'WSW', 'West', 'WNW', 'NW', 'NNW']
+  const index = Math.round(degrees / 22.5) % 16
+  return directions[index]
+}
+
+function getWaveQuality(height: number, period: number): string {
+  if (period >= 12) return 'This is quality groundswell with good power and long rides.'
+  if (period >= 8) return 'Decent swell with moderate power and rideable waves.'
+  if (period >= 6) return 'Short period wind swell - waves will be quick and choppy.'
+  return 'Very short period - expect weak, mushy waves.'
+}
+
+function getTideContext(tideState: string): string {
+  if (tideState.includes('Rising')) return 'Rising tide usually brings cleaner waves and better shape.'
+  if (tideState.includes('Falling')) return 'Falling tide can expose more sandbars but may get shallower.'
+  if (tideState.includes('High')) return 'High tide offers deeper water but waves may be mushier.'
+  if (tideState.includes('Low')) return 'Low tide exposes sandbars - watch for shallow sections.'
+  return 'Mid tide typically offers the most consistent conditions.'
+}
+
+// REPORT GENERATION
+async function generateDetailedSurfReport(surfData: any) {
+  console.log('🤖 Generating 2-paragraph surf report...')
   
   try {
-    const prompt = createEnhancedPrompt(surfData);
+    const prompt = createDetailedSurfPrompt(surfData)
     
     const { object: aiResponse } = await generateObject({
       model: openai('gpt-4o-mini'),
       schema: surfReportSchema,
       prompt,
-      temperature: 0.4,
-      maxTokens: 500, // Increased for more detailed reports
+      temperature: 0.6,
+      maxTokens: 500,   // Reduced for 2 paragraphs
     })
     
-    console.log(`✅ AI generated ${aiResponse.report.length} char enhanced report`);
+    // Combine the 2 paragraphs with proper spacing
+    const fullReport = [
+      aiResponse.conditionsAnalysis,
+      aiResponse.recommendationsAndOutlook
+    ].join('\n\n')
     
+    console.log(`✅ AI generated 2-paragraph report (${fullReport.split(' ').length} words)`)
+    
+    // Create report object
     const report = {
-      id: `surf_enhanced_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `surf_2para_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       timestamp: new Date().toISOString(),
       location: surfData.location,
-      report: aiResponse.report,
+      report: fullReport,
       conditions: {
         wave_height_ft: surfData.details.wave_height_ft,
-        wave_period_sec: surfData.details.wave_period_sec, 
+        wave_period_sec: surfData.details.wave_period_sec,
         wind_speed_kts: surfData.details.wind_speed_kts,
-        wind_direction_deg: surfData.details.wind_direction_deg, 
-        swell_direction_deg: surfData.details.swell_direction_deg, 
+        wind_direction_deg: surfData.details.wind_direction_deg,
         tide_state: surfData.details.tide_state,
         weather_description: surfData.weather.weather_description,
-        surfability_score: surfData.score,
-        air_temperature_f: Math.round(surfData.weather.air_temperature_f),
-        water_temperature_f: Math.round(surfData.weather.water_temperature_f)
+        surfability_score: surfData.score
       },
       recommendations: {
-        board_type: aiResponse.boardRecommendation,
-        skill_level: aiResponse.skillLevel,
-        best_spots: aiResponse.bestSpots || ['Vilano Beach', 'St. Augustine Pier', 'Anastasia State Park'],
-        timing_advice: aiResponse.timingAdvice || 'Check conditions regularly'
+        board_type: aiResponse.recommendations.boardType,
+        wetsuit_thickness: aiResponse.recommendations.wetsuitThickness,
+        skill_level: aiResponse.recommendations.skillLevel,
+        best_spots: aiResponse.recommendations.bestSpots,
+        timing_advice: aiResponse.recommendations.timingAdvice
       },
       cached_until: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
       generation_meta: {
-        backend: 'bun-enhanced',
+        backend: 'bun-2paragraph',
         model: 'gpt-4o-mini',
-        report_length: aiResponse.report.length,
-        data_completeness: 'full', // ✅ ALL DATA INCLUDED
-        temperature_precision: 'whole_numbers'
+        report_length: fullReport.length,
+        word_count: fullReport.split(' ').length,
+        paragraphs: 2,
+        prompt_version: '2.1'
       }
     }
     
     return report
     
   } catch (error) {
-    console.error('❌ AI generation failed:', error)
+    console.error('❌ 2-paragraph AI generation failed:', error)
     
-    const windMph = Math.round(surfData.details.wind_speed_kts * 1.15078);
-    const swellDir = surfData.details.swell_direction_deg;
-    const windDir = surfData.details.wind_direction_deg;
-    const period = surfData.details.wave_period_sec;
-    
-    const fallbackReport = `Surf check for St. Augustine! We've got ${surfData.details.wave_height_ft} foot waves with a ${period} second period coming from ${swellDir}°. Winds are ${windMph} mph from ${windDir}°. The tide is ${surfData.details.tide_state.toLowerCase()} which is creating ${surfData.score >= 60 ? 'decent' : 'mellow'} conditions. Air temp is ${Math.round(surfData.weather.air_temperature_f)}°F and water is ${Math.round(surfData.weather.water_temperature_f)}°F. ${surfData.details.wave_height_ft >= 3 ? 'Grab your shortboard' : 'Longboard conditions'} and hit up Vilano Beach or the pier for some waves!`
+    // SIMPLIFIED FALLBACK 
+    const windMph = Math.round(surfData.details.wind_speed_kts * 1.15078)
+    const fallbackReport = createSimpleFallbackReport(surfData, windMph)
     
     return {
-      id: `surf_fallback_enhanced_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `surf_fallback_2para_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       timestamp: new Date().toISOString(),
       location: surfData.location,
       report: fallbackReport,
       conditions: {
         wave_height_ft: surfData.details.wave_height_ft,
-        wave_period_sec: surfData.details.wave_period_sec, 
+        wave_period_sec: surfData.details.wave_period_sec,
         wind_speed_kts: surfData.details.wind_speed_kts,
-        wind_direction_deg: surfData.details.wind_direction_deg, 
-        swell_direction_deg: surfData.details.swell_direction_deg, 
+        wind_direction_deg: surfData.details.wind_direction_deg,
         tide_state: surfData.details.tide_state,
         weather_description: surfData.weather.weather_description,
-        surfability_score: surfData.score,
-        air_temperature_f: Math.round(surfData.weather.air_temperature_f), 
-        water_temperature_f: Math.round(surfData.weather.water_temperature_f) 
+        surfability_score: surfData.score
       },
       recommendations: {
-        board_type: surfData.details.wave_height_ft >= 3 ? 'Shortboard' : 'Longboard',
+        board_type: surfData.details.wave_height_ft >= 3 ? 'Shortboard (6\'0" - 6\'6")' : 'Longboard (8\'6" - 9\'2")',
+        wetsuit_thickness: surfData.weather.water_temperature_f < 65 ? '3/2mm' : 'Spring suit',
         skill_level: surfData.score >= 65 ? 'intermediate' : 'beginner',
-        best_spots: ['Vilano Beach', 'St. Augustine Pier', 'Anastasia State Park'],
-        timing_advice: 'Check conditions regularly for changes'
+        best_spots: ['Vilano Beach', 'St. Augustine Pier', 'Crescent Beach'],
+        timing_advice: 'Check conditions regularly as they change throughout the day'
       },
       cached_until: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
       generation_meta: {
-        backend: 'bun-enhanced-fallback',
-        model: 'hardcoded-with-complete-data',
+        backend: 'bun-2paragraph-fallback',
+        model: 'hardcoded-2para',
         report_length: fallbackReport.length,
-        data_completeness: 'full',
-        temperature_precision: 'whole_numbers'
+        word_count: fallbackReport.split(' ').length,
+        paragraphs: 2,
+        prompt_version: '2.1'
       }
     }
   }
 }
 
+function createSimpleFallbackReport(surfData: any, windMph: number): string {
+  const condition = surfData.score >= 70 ? 'good' : surfData.score >= 50 ? 'fair' : 'poor'
+  const waveDesc = surfData.details.wave_height_ft >= 4 ? 'solid' : 
+                   surfData.details.wave_height_ft >= 2 ? 'fun-sized' : 'small'
+  
+  const paragraph1 = `St. Augustine surf check shows ${waveDesc} ${surfData.details.wave_height_ft}ft waves at ${surfData.details.wave_period_sec} seconds, delivering ${surfData.details.wave_period_sec >= 10 ? 'decent power with some nice long rides' : 'quicker, choppier waves with less power'}. Wind is ${windMph} mph from the ${getWindDirectionText(surfData.details.wind_direction_deg)} which ${windMph < 10 ? 'is light enough for clean, glassy conditions' : 'is creating some texture and bump on the water'}. Tide is ${surfData.details.tide_state.toLowerCase()} and water temp is ${surfData.weather.water_temperature_f}°F.`
+  
+  const paragraph2 = `${surfData.details.wave_height_ft >= 3 ? 'Grab your shortboard and head to Vilano Beach or the pier area where the waves should have some punch' : 'Perfect longboard day - try Vilano Beach or Crescent Beach for the mellow, rolling waves'}. ${surfData.weather.water_temperature_f < 65 ? 'You\'ll want a 3/2mm wetsuit for that chilly water' : 'Spring suit or boardshorts should be perfect for the comfortable water temps'}. ${condition === 'good' ? 'Definitely worth the paddle out today!' : condition === 'fair' ? 'Surfable conditions if you need your wave fix.' : 'Might be better for beach walks, but conditions can change quickly.'}`
+  
+  return `${paragraph1}\n\n${paragraph2}`
+}
+
+// MAIN REQUEST HANDLER 
 async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url)
   const method = req.method
@@ -209,11 +220,11 @@ async function handleRequest(req: Request): Promise<Response> {
   if (method === 'GET' && url.pathname === '/health') {
     return jsonResponse({
       status: 'ok',
-      service: 'Surf Lab AI (Enhanced Bun)',
+      service: 'Can I Surf Today?',
       timestamp: new Date().toISOString(),
       runtime: 'Bun',
       version: Bun.version,
-      features: ['complete_data_usage', 'rounded_temperatures', 'enhanced_prompts']
+      features: ['detailed-reports', 'multi-paragraph', 'enhanced-prompts']
     })
   }
   
@@ -231,7 +242,7 @@ async function handleRequest(req: Request): Promise<Response> {
         return jsonResponse({ error: 'Missing surf data' }, 400)
       }
       
-      const report = await generateSurfReport(surfData)
+      const report = await generateDetailedSurfReport(surfData)
       
       return jsonResponse({
         success: true,
@@ -239,7 +250,7 @@ async function handleRequest(req: Request): Promise<Response> {
         performance: {
           backend: 'bun-enhanced',
           runtime: 'bun',
-          data_quality: 'complete_with_all_fields'
+          features: ['detailed-structure', 'multiple-paragraphs', 'enhanced-prompts']
         }
       })
       
@@ -253,7 +264,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
   
-  // CRON GENERATION
+  // CRON GENERATION (same logic, calls the detailed function)
   if (method === 'POST' && url.pathname === '/cron/generate-fresh-report') {
     try {
       const body = await req.json()
@@ -271,12 +282,12 @@ async function handleRequest(req: Request): Promise<Response> {
       }
       
       const surfData = await surfDataResponse.json()
-      console.log('📊 Got complete surf data:', surfData.location)
+      console.log('📊 Got surf data:', surfData.location)
       
-      // Generate report using enhanced function
-      const report = await generateSurfReport(surfData)
+      // Generate 2-paragraph report
+      const report = await generateDetailedSurfReport(surfData)
       
-      console.log(`✅ Enhanced report generated: ${report.id}`)
+      console.log(`✅ Detailed report generated: ${report.id} (${report.generation_meta.word_count} words)`)
       
       // Save to Vercel
       try {
@@ -290,7 +301,7 @@ async function handleRequest(req: Request): Promise<Response> {
         })
         
         if (saveResponse.ok) {
-          console.log('✅ Enhanced report saved successfully')
+          console.log('✅ Detailed report saved successfully')
         } else {
           console.warn('⚠️ Save failed but continuing:', saveResponse.status)
         }
@@ -308,19 +319,19 @@ async function handleRequest(req: Request): Promise<Response> {
           ai_report_generated: true,
           new_report_id: report.id,
           report_quality: {
+            word_count: report.generation_meta.word_count,
+            sections: report.generation_meta.sections,
             length: report.generation_meta.report_length,
-            backend: report.generation_meta.backend,
-            data_completeness: report.generation_meta.data_completeness,
-            temperature_precision: report.generation_meta.temperature_precision
+            backend: report.generation_meta.backend
           }
         }
       })
       
     } catch (error) {
-      console.error('❌ Cron endpoint failed:', error)
+      console.log('❌ Enhanced cron endpoint failed:', error)
       return jsonResponse({
         success: false,
-        error: 'Cron failed',
+        error: '2-paragraph cron failed',
         details: error instanceof Error ? error.message : String(error)
       }, 500)
     }
@@ -332,9 +343,8 @@ async function handleRequest(req: Request): Promise<Response> {
 // START SERVER
 const port = parseInt(process.env.PORT || '3000')
 
-console.log(`🚀 Enhanced Bun Surf Lab starting on port ${port}`)
+console.log(`🚀 Can I Surf Today? starting on port ${port}`)
 console.log(`⚡ Runtime: Bun ${Bun.version}`)
-console.log(`✅ Features: Complete data usage, rounded temps, enhanced prompts`)
 
 serve({
   port,
@@ -351,4 +361,4 @@ serve({
   }
 })
 
-console.log(`✅ Enhanced Bun server running at http://localhost:${port}`)
+console.log(`✅ Bun server running at http://localhost:${port}`)
