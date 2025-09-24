@@ -61,9 +61,57 @@ WRITE EXACTLY 2 PARAGRAPHS:
 Start with current wave conditions (${surfData.details.wave_height_ft}ft at ${surfData.details.wave_period_sec}s). Analyze the wave quality and power. Discuss wind impact (${windMph} mph ${windDirection}). Mention tide state and water temperature.
 
 **Paragraph 2 - Recommendations & Outlook** (3-4 sentences):  
-Recommend specific St. Augustine spots (Vilano Beach, St. Aug Pier, Crescent Beach, etc.). Suggest board type and wetsuit for ${surfData.weather.water_temperature_f}°F water. Give timing advice and bottom line assessment.
+Recommend specific St. Augustine spots (Vilano Beach, St. Aug Pier, Crescent Beach, etc.). Give GENERAL board type recommendations (longboard for small/mellow waves, shortboard for bigger/steeper waves, funboard/mid-length for in-between) - DO NOT specify exact lengths or sizes. Suggest wetsuit for ${surfData.weather.water_temperature_f}°F water. Give timing advice and bottom line assessment.
+
+BOARD GUIDANCE:
+- Small waves (under 3ft): Recommend "longboard for easier wave catching"  
+- Medium waves (3-5ft): Recommend "shortboard or funboard depending on your preference"
+- Bigger waves (5ft+): Recommend "shortboard for better maneuverability"
+- Never mention specific board lengths, volumes, or dimensions
 
 TONE: Conversational local surfer who knows the area well. Be honest about conditions - don't oversell poor surf. Use some surf slang but keep it readable.`
+}
+
+// Update your structured recommendations schema to avoid specific sizes
+const surfReportSchema = z.object({
+  conditionsAnalysis: z.string().min(120).describe("First paragraph: Current wave, wind, and tide conditions with analysis"),
+  recommendationsAndOutlook: z.string().min(100).describe("Second paragraph: Spot recommendations, gear advice, and bottom line"),
+  
+  // Structured recommendations (for API consumers)
+  recommendations: z.object({
+    boardType: z.string().describe("General board type recommendation (longboard, shortboard, funboard) - NO specific sizes"),
+    wetsuitThickness: z.string().optional().describe("Wetsuit recommendation"),
+    skillLevel: z.enum(['beginner', 'intermediate', 'advanced']).describe("Recommended skill level"),
+    bestSpots: z.array(z.string()).min(2).describe("Top 2-3 spot recommendations"),
+    timingAdvice: z.string().describe("Best timing for today's session")
+  })
+})
+
+// Update your fallback function to give better board recommendations
+function createEnhancedFallbackReport(surfData: any, windMph: number): string {
+  const condition = surfData.score >= 70 ? 'good' : surfData.score >= 50 ? 'fair' : 'poor'
+  const waveDesc = surfData.details.wave_height_ft >= 4 ? 'solid' : 
+                   surfData.details.wave_height_ft >= 2 ? 'fun-sized' : 'small'
+  
+  // Use compass directions in the text
+  const swellCompass = surfData.details.swell_direction_compass || 'unknown direction'
+  const windCompass = surfData.details.wind_direction_compass || 'variable'
+  
+  // Better board recommendations based on wave size
+  let boardRec: string;
+  if (surfData.details.wave_height_ft >= 4) {
+    boardRec = 'Grab your shortboard for better maneuverability in these bigger waves'
+  } else if (surfData.details.wave_height_ft >= 2.5) {
+    boardRec = 'A shortboard or funboard will work well for these conditions'
+  } else {
+    boardRec = 'Perfect longboard conditions - the extra length will help you catch these smaller waves'
+  }
+  
+  const paragraph1 = `St. Augustine surf check shows ${waveDesc} ${surfData.details.wave_height_ft}ft waves at ${surfData.details.wave_period_sec} seconds coming from the ${swellCompass}, delivering ${surfData.details.wave_period_sec >= 10 ? 'decent power with some nice long rides' : 'quicker, choppier waves with less power'}. Wind is ${windMph} mph from the ${windCompass} which ${windMph < 10 ? 'is light enough for clean, glassy conditions' : 'is creating some texture and bump on the water'}. Tide is ${surfData.details.tide_state.toLowerCase()} at ${surfData.details.tide_height_ft}ft and water temp is ${surfData.weather.water_temperature_f}°F.`
+  
+  const paragraph2 = `${boardRec} and head to ${surfData.details.wave_height_ft >= 3 ? 'Vilano Beach or the pier area where the waves should have some punch' : 'Vilano Beach or Crescent Beach for the mellow, rolling waves'}. ${surfData.weather.water_temperature_f < 65 ? 'You\'ll want a wetsuit for that chilly water' : 'Spring suit or boardshorts should be perfect for the comfortable water temps'}. ${condition === 'good' ? 'Definitely worth the paddle out today!' : condition === 'fair' ? 'Surfable conditions if you need your wave fix.' : 'Might be better for beach walks, but conditions can change quickly.'}`
+  
+  return `${paragraph1}\n\n${paragraph2}`
 }
 
 // Helper functions for better context
@@ -184,6 +232,16 @@ async function generateDetailedSurfReport(surfData: any) {
     // Enhanced fallback with compass data too
     const windMph = Math.round(surfData.details.wind_speed_kts * 1.15078)
     const fallbackReport = createEnhancedFallbackReport(surfData, windMph)
+
+    function getBoardTypeRecommendation(waveHeight: number): string {
+      if (waveHeight >= 4) {
+        return 'Shortboard recommended'
+      } else if (waveHeight >= 2.5) {
+        return 'Shortboard or funboard'
+      } else {
+        return 'Longboard recommended'
+      }
+    }
     
     return {
       id: `surf_fallback_enhanced_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
@@ -217,7 +275,8 @@ async function generateDetailedSurfReport(surfData: any) {
         air_temperature_f: surfData.weather.air_temperature_f
       },
       recommendations: {
-        board_type: surfData.details.wave_height_ft >= 3 ? 'Shortboard' : 'Longboard',
+          board_type: getBoardTypeRecommendation(surfData.details.wave_height_ft),
+
         wetsuit_thickness: surfData.weather.water_temperature_f < 65 ? '3/2mm' : 'Spring suit',
         skill_level: surfData.score >= 65 ? 'intermediate' : 'beginner',
         best_spots: ['Vilano Beach', 'St. Augustine Pier', 'Crescent Beach'],
