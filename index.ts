@@ -98,7 +98,7 @@ function getTideContext(tideState: string): string {
 
 // REPORT GENERATION
 async function generateDetailedSurfReport(surfData: any) {
-  console.log('🤖 Generating 2-paragraph surf report...')
+  console.log('🤖 Generating detailed surf report with compass directions...')
   
   try {
     const prompt = createDetailedSurfPrompt(surfData)
@@ -108,31 +108,47 @@ async function generateDetailedSurfReport(surfData: any) {
       schema: surfReportSchema,
       prompt,
       temperature: 0.6,
-      maxTokens: 500,   // Reduced for 2 paragraphs
+      maxTokens: 500,
     })
     
-    // Combine the 2 paragraphs with proper spacing
     const fullReport = [
       aiResponse.conditionsAnalysis,
       aiResponse.recommendationsAndOutlook
     ].join('\n\n')
     
-    console.log(`✅ AI generated 2-paragraph report (${fullReport.split(' ').length} words)`)
+    console.log(`✅ AI generated report (${fullReport.split(' ').length} words)`)
     
-    // Create report object
+    // 🆕 ENHANCED: Include ALL compass and environmental data
     const report = {
       id: `surf_2para_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       timestamp: new Date().toISOString(),
       location: surfData.location,
       report: fullReport,
       conditions: {
+        // Basic wave/wind data (existing)
         wave_height_ft: surfData.details.wave_height_ft,
         wave_period_sec: surfData.details.wave_period_sec,
         wind_speed_kts: surfData.details.wind_speed_kts,
         wind_direction_deg: surfData.details.wind_direction_deg,
         tide_state: surfData.details.tide_state,
         weather_description: surfData.weather.weather_description,
-        surfability_score: surfData.score
+        surfability_score: surfData.score,
+        
+        // 🆕 ADD: Compass directions and descriptions
+        swell_direction_deg: surfData.details.swell_direction_deg,
+        swell_direction_compass: surfData.details.swell_direction_compass,
+        swell_direction_text: surfData.details.swell_direction_text,
+        swell_direction_description: surfData.details.swell_direction_description,
+        wind_direction_compass: surfData.details.wind_direction_compass,
+        wind_direction_text: surfData.details.wind_direction_text,
+        wind_direction_description: surfData.details.wind_direction_description,
+        
+        // 🆕 ADD: Environmental data
+        tide_height_ft: surfData.details.tide_height_ft,
+        water_temperature_c: surfData.weather.water_temperature_c,
+        water_temperature_f: surfData.weather.water_temperature_f,
+        air_temperature_c: surfData.weather.air_temperature_c,
+        air_temperature_f: surfData.weather.air_temperature_f
       },
       recommendations: {
         board_type: aiResponse.recommendations.boardType,
@@ -143,37 +159,62 @@ async function generateDetailedSurfReport(surfData: any) {
       },
       cached_until: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
       generation_meta: {
-        backend: 'bun-2paragraph',
+        backend: 'bun-enhanced-with-compass',
         model: 'gpt-4o-mini',
         report_length: fullReport.length,
         word_count: fullReport.split(' ').length,
         paragraphs: 2,
-        prompt_version: '2.1'
+        prompt_version: '2.2',
+        includes_compass_data: true
       }
     }
+    
+    console.log('✅ Generated enhanced report with compass data:', {
+      reportId: report.id,
+      windCompass: report.conditions.wind_direction_compass,
+      swellCompass: report.conditions.swell_direction_compass,
+      hasAllFields: !!(report.conditions.wind_direction_compass && report.conditions.swell_direction_compass)
+    })
     
     return report
     
   } catch (error) {
-    console.error('❌ 2-paragraph AI generation failed:', error)
+    console.error('❌ Enhanced AI generation failed:', error)
     
-    // SIMPLIFIED FALLBACK 
+    // Enhanced fallback with compass data too
     const windMph = Math.round(surfData.details.wind_speed_kts * 1.15078)
-    const fallbackReport = createSimpleFallbackReport(surfData, windMph)
+    const fallbackReport = createEnhancedFallbackReport(surfData, windMph)
     
     return {
-      id: `surf_fallback_2para_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `surf_fallback_enhanced_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       timestamp: new Date().toISOString(),
       location: surfData.location,
       report: fallbackReport,
       conditions: {
+        // Basic data
         wave_height_ft: surfData.details.wave_height_ft,
         wave_period_sec: surfData.details.wave_period_sec,
         wind_speed_kts: surfData.details.wind_speed_kts,
         wind_direction_deg: surfData.details.wind_direction_deg,
         tide_state: surfData.details.tide_state,
         weather_description: surfData.weather.weather_description,
-        surfability_score: surfData.score
+        surfability_score: surfData.score,
+        
+        // 🆕 Compass data in fallback too
+        swell_direction_deg: surfData.details.swell_direction_deg,
+        swell_direction_compass: surfData.details.swell_direction_compass,
+        swell_direction_text: surfData.details.swell_direction_text,
+        swell_direction_description: surfData.details.swell_direction_description,
+        wind_direction_compass: surfData.details.wind_direction_compass,
+        wind_direction_text: surfData.details.wind_direction_text,
+        wind_direction_description: surfData.details.wind_direction_description,
+        
+        // Environmental data
+        tide_height_ft: surfData.details.tide_height_ft,
+        water_temperature_c: surfData.weather.water_temperature_c,
+        water_temperature_f: surfData.weather.water_temperature_f,
+        air_temperature_c: surfData.weather.air_temperature_c,
+        air_temperature_f: surfData.weather.air_temperature_f
       },
       recommendations: {
         board_type: surfData.details.wave_height_ft >= 3 ? 'Shortboard (6\'0" - 6\'6")' : 'Longboard (8\'6" - 9\'2")',
@@ -184,23 +225,29 @@ async function generateDetailedSurfReport(surfData: any) {
       },
       cached_until: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
       generation_meta: {
-        backend: 'bun-2paragraph-fallback',
-        model: 'hardcoded-2para',
+        backend: 'bun-enhanced-fallback',
+        model: 'hardcoded-with-compass',
         report_length: fallbackReport.length,
         word_count: fallbackReport.split(' ').length,
         paragraphs: 2,
-        prompt_version: '2.1'
+        prompt_version: '2.2',
+        includes_compass_data: true
       }
     }
   }
 }
 
-function createSimpleFallbackReport(surfData: any, windMph: number): string {
+// 🆕 Enhanced fallback that uses compass directions in text
+function createEnhancedFallbackReport(surfData: any, windMph: number): string {
   const condition = surfData.score >= 70 ? 'good' : surfData.score >= 50 ? 'fair' : 'poor'
   const waveDesc = surfData.details.wave_height_ft >= 4 ? 'solid' : 
                    surfData.details.wave_height_ft >= 2 ? 'fun-sized' : 'small'
   
-  const paragraph1 = `St. Augustine surf check shows ${waveDesc} ${surfData.details.wave_height_ft}ft waves at ${surfData.details.wave_period_sec} seconds, delivering ${surfData.details.wave_period_sec >= 10 ? 'decent power with some nice long rides' : 'quicker, choppier waves with less power'}. Wind is ${windMph} mph from the ${getWindDirectionText(surfData.details.wind_direction_deg)} which ${windMph < 10 ? 'is light enough for clean, glassy conditions' : 'is creating some texture and bump on the water'}. Tide is ${surfData.details.tide_state.toLowerCase()} and water temp is ${surfData.weather.water_temperature_f}°F.`
+  // Use compass directions in the text
+  const swellCompass = surfData.details.swell_direction_compass || 'unknown direction'
+  const windCompass = surfData.details.wind_direction_compass || 'variable'
+  
+  const paragraph1 = `St. Augustine surf check shows ${waveDesc} ${surfData.details.wave_height_ft}ft waves at ${surfData.details.wave_period_sec} seconds coming from the ${swellCompass}, delivering ${surfData.details.wave_period_sec >= 10 ? 'decent power with some nice long rides' : 'quicker, choppier waves with less power'}. Wind is ${windMph} mph from the ${windCompass} which ${windMph < 10 ? 'is light enough for clean, glassy conditions' : 'is creating some texture and bump on the water'}. Tide is ${surfData.details.tide_state.toLowerCase()} at ${surfData.details.tide_height_ft}ft and water temp is ${surfData.weather.water_temperature_f}°F.`
   
   const paragraph2 = `${surfData.details.wave_height_ft >= 3 ? 'Grab your shortboard and head to Vilano Beach or the pier area where the waves should have some punch' : 'Perfect longboard day - try Vilano Beach or Crescent Beach for the mellow, rolling waves'}. ${surfData.weather.water_temperature_f < 65 ? 'You\'ll want a 3/2mm wetsuit for that chilly water' : 'Spring suit or boardshorts should be perfect for the comfortable water temps'}. ${condition === 'good' ? 'Definitely worth the paddle out today!' : condition === 'fair' ? 'Surfable conditions if you need your wave fix.' : 'Might be better for beach walks, but conditions can change quickly.'}`
   
