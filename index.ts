@@ -217,7 +217,7 @@ async function generateDetailedSurfReport(surfData: any) {
         air_temperature_f: surfData.weather.air_temperature_f
       },
       recommendations: {
-        board_type: surfData.details.wave_height_ft >= 3 ? 'Shortboard (6\'0" - 6\'6")' : 'Longboard (8\'6" - 9\'2")',
+        board_type: surfData.details.wave_height_ft >= 3 ? 'Shortboard' : 'Longboard',
         wetsuit_thickness: surfData.weather.water_temperature_f < 65 ? '3/2mm' : 'Spring suit',
         skill_level: surfData.score >= 65 ? 'intermediate' : 'beginner',
         best_spots: ['Vilano Beach', 'St. Augustine Pier', 'Crescent Beach'],
