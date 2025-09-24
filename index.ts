@@ -12,7 +12,7 @@ const surfReportSchema = z.object({
     wetsuitThickness: z.string().optional().describe("Wetsuit recommendation"),
     skillLevel: z.enum(['beginner', 'intermediate', 'advanced']).describe("Recommended skill level"),
     bestSpots: z.array(z.string()).min(2).describe("Top 2-3 spot recommendations"),
-    timingAdvice: z.string().describe("Best timing for today's session")
+    timingAdvice: z.string().describe("Best timing for today's session between now and dusk")
   })
 })
 
