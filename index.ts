@@ -12,7 +12,7 @@ const surfReportSchema = z.object({
     wetsuitThickness: z.string().optional().describe("Wetsuit recommendation"),
     skillLevel: z.enum(['beginner', 'intermediate', 'advanced']).describe("Recommended skill level"),
     bestSpots: z.array(z.string()).min(2).describe("Top 2-3 spot recommendations"),
-    timingAdvice: z.string().describe("Best timing for today's session between now and dusk")
+    timingAdvice: z.string().describe("When to surf — or when to check back if conditions are not currently viable")
   })
 })
 
@@ -32,6 +32,57 @@ function jsonResponse(data: any, status = 200) {
 
 function corsResponse() {
   return new Response(null, { status: 204, headers: corsHeaders })
+}
+
+// Approximate sunrise/sunset for St. Augustine, FL (30°N) in Eastern local time (decimal hours).
+// Accounts for DST: EDT months use DST-adjusted values.
+const SURF_WINDOW: [number, number][] = [
+  [7.25, 17.65], // Jan
+  [7.05, 18.15], // Feb
+  [7.45, 19.6],  // Mar (DST mid-month, averaged)
+  [6.75, 19.9],  // Apr
+  [6.4,  20.25], // May
+  [6.35, 20.5],  // Jun
+  [6.5,  20.4],  // Jul
+  [6.85, 20.05], // Aug
+  [7.1,  19.35], // Sep
+  [7.35, 18.65], // Oct
+  [6.75, 17.85], // Nov (DST ends early month, averaged)
+  [7.1,  17.55], // Dec
+]
+
+function getEasternTime(): { hour: number, month: number, formatted: string } {
+  const now = new Date()
+  // Parse into Eastern timezone so DST is handled automatically
+  const eastern = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
+  const hour = eastern.getHours() + eastern.getMinutes() / 60
+  const month = eastern.getMonth()
+  const formatted = eastern.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+  return { hour, month, formatted }
+}
+
+function getSurfWindow(month: number): { rise: number, set: number } {
+  const [rise, set] = SURF_WINDOW[month]!
+  return { rise, set }
+}
+
+type SessionViability =
+  | { viable: true }
+  | { viable: false, reason: 'night', riseStr: string }
+  | { viable: false, reason: 'lightning' }
+
+function getSessionViability(hour: number, month: number, weatherDescription: string): SessionViability {
+  if (/thunder|lightning|tropical storm|hurricane/i.test(weatherDescription)) {
+    return { viable: false, reason: 'lightning' }
+  }
+  const { rise, set } = getSurfWindow(month)
+  if (hour < rise || hour >= set) {
+    const riseH = Math.floor(rise)
+    const riseM = Math.round((rise % 1) * 60)
+    const riseStr = `${riseH}:${riseM.toString().padStart(2, '0')} AM`
+    return { viable: false, reason: 'night', riseStr }
+  }
+  return { viable: true }
 }
 
 function getCompassDirection(degrees: number): string {
@@ -62,7 +113,11 @@ function getBoardTypeRecommendation(waveHeight: number): string {
   return 'Longboard recommended'
 }
 
-function getFallbackTimingAdvice(tideState: string): string {
+function getFallbackTimingAdvice(tideState: string, viability: SessionViability): string {
+  if (!viability.viable) {
+    if (viability.reason === 'lightning') return 'Wait for the storm to clear completely before considering paddling out'
+    return `Check conditions again at dawn (~${viability.riseStr}) when it\'s light enough to surf`
+  }
   if (tideState.includes('Rising')) return 'Session now — rising tide tends to clean up the waves'
   if (tideState.includes('Falling')) return 'Go sooner rather than later — falling tide can get shallow over the sandbars'
   if (tideState.includes('Low')) return 'Wait for the tide to come up a bit for better shape'
@@ -73,6 +128,29 @@ function createDetailedSurfPrompt(surfData: any): string {
   const windMph = Math.round(surfData.details.wind_speed_kts * 1.15078)
   const swellDirection = getCompassDirection(surfData.details.swell_direction_deg)
   const windDirection = getCompassDirection(surfData.details.wind_direction_deg)
+  const { hour, month, formatted: localTime } = getEasternTime()
+  const viability = getSessionViability(hour, month, surfData.weather.weather_description)
+
+  const viabilityNote = viability.viable
+    ? 'Surfable now'
+    : viability.reason === 'lightning'
+      ? 'NOT SURFABLE — thunderstorm/lightning activity'
+      : `NOT SURFABLE NOW — nighttime (light returns ~${viability.riseStr})`
+
+  const viabilityInstructions = viability.viable ? '' : viability.reason === 'lightning'
+    ? `
+IMPORTANT — SAFETY OVERRIDE:
+There is active lightning or thunderstorm activity. This overrides everything else.
+- Lead paragraph 1 with a clear, direct safety warning: the ocean is UNSAFE during electrical activity. No hedging.
+- Paragraph 2 should describe what conditions will look like once the storm clears, and when to check back.
+- timingAdvice must tell the user to wait until the storm passes before considering the water.`
+    : `
+IMPORTANT — TIMING OVERRIDE:
+It is currently nighttime. Nobody surfs in the dark.
+- Do NOT write as if a session is possible right now.
+- Paragraph 1: briefly acknowledge the time, then describe what the current forecast conditions mean for tomorrow morning — will it be worth getting up for dawn patrol?
+- Paragraph 2: give local context for those conditions at first light (best spots, what to expect, crowd level at dawn). End with an honest bottom-line on whether a dawn session is worth setting an alarm for.
+- timingAdvice must direct the user to check back at dawn (~${(viability as { viable: false, reason: 'night', riseStr: string }).riseStr}).`
 
   return `You are an experienced local surf forecaster for St. Augustine, Florida. Write a 2-paragraph surf report. Be honest — don't oversell poor surf.
 
@@ -87,7 +165,9 @@ CURRENT CONDITIONS:
 • Overall Score: ${surfData.score}/100
 • Wave Quality: ${getWaveQuality(surfData.details.wave_height_ft, surfData.details.wave_period_sec)}
 • Tide Context: ${getTideContext(surfData.details.tide_state)}
-
+• Local Time: ${localTime} ET
+• Session Status: ${viabilityNote}
+${viabilityInstructions}
 NOTE: The raw numbers above are already shown to the user as data cards. The paragraphs below should interpret and contextualise — not restate the same figures.
 
 WRITE EXACTLY 2 PARAGRAPHS:
@@ -162,7 +242,7 @@ async function generateDetailedSurfReport(surfData: any) {
         report_length: fullReport.length,
         word_count: fullReport.split(' ').length,
         paragraphs: 2,
-        prompt_version: '2.3',
+        prompt_version: '2.4',
         includes_compass_data: true
       }
     }
@@ -180,7 +260,9 @@ async function generateDetailedSurfReport(surfData: any) {
     console.error('❌ Enhanced AI generation failed:', error)
 
     const windMph = Math.round(surfData.details.wind_speed_kts * 1.15078)
-    const fallbackReport = createEnhancedFallbackReport(surfData, windMph)
+    const { hour, month } = getEasternTime()
+    const viability = getSessionViability(hour, month, surfData.weather.weather_description)
+    const fallbackReport = createEnhancedFallbackReport(surfData, windMph, viability)
 
     return {
       id: `surf_fallback_enhanced_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -215,7 +297,7 @@ async function generateDetailedSurfReport(surfData: any) {
           : undefined,
         skill_level: surfData.score >= 65 ? 'intermediate' : 'beginner',
         best_spots: ['Vilano Beach', 'St. Augustine Pier', 'Crescent Beach'],
-        timing_advice: getFallbackTimingAdvice(surfData.details.tide_state)
+        timing_advice: getFallbackTimingAdvice(surfData.details.tide_state, viability)
       },
       cached_until: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
       generation_meta: {
@@ -224,14 +306,28 @@ async function generateDetailedSurfReport(surfData: any) {
         report_length: fallbackReport.length,
         word_count: fallbackReport.split(' ').length,
         paragraphs: 2,
-        prompt_version: '2.3',
+        prompt_version: '2.4',
         includes_compass_data: true
       }
     }
   }
 }
 
-function createEnhancedFallbackReport(surfData: any, windMph: number): string {
+function createEnhancedFallbackReport(surfData: any, windMph: number, viability: SessionViability): string {
+  if (!viability.viable) {
+    if (viability.reason === 'lightning') {
+      const p1 = `Lightning and thunderstorm activity means the ocean is unsafe right now — stay out of the water. No surf session is worth the risk during an electrical storm.`
+      const p2 = `Keep an eye on the radar and check back once the storm fully clears. The ${surfData.details.wave_height_ft}ft swell at ${surfData.details.wave_period_sec}s should still be around once it's safe to paddle out.`
+      return `${p1}\n\n${p2}`
+    }
+    // Night
+    const condition = surfData.score >= 70 ? 'worth setting an alarm for' : surfData.score >= 50 ? 'worth a look at dawn' : 'not spectacular — you can sleep in'
+    const waveDesc = surfData.details.wave_height_ft >= 4 ? 'solid' : surfData.details.wave_height_ft >= 2 ? 'fun-sized' : 'small'
+    const p1 = `It's dark out — no surfing tonight. Tomorrow morning the forecast shows ${waveDesc} ${surfData.details.wave_height_ft}ft waves at ${surfData.details.wave_period_sec}s from the ${surfData.details.swell_direction_compass || 'east'}, with ${windMph} mph ${surfData.details.wind_direction_compass || 'variable'} winds. Water is ${surfData.weather.water_temperature_f}°F.`
+    const p2 = `Dawn patrol at ${viability.riseStr} looks ${condition}. ${surfData.details.wave_height_ft >= 3 ? 'Vilano Beach or the pier should have the best shape at first light.' : 'Crescent Beach or Vilano are your best bets for any rideable waves.'} Check back at sunrise for updated conditions.`
+    return `${p1}\n\n${p2}`
+  }
+
   const condition = surfData.score >= 70 ? 'good' : surfData.score >= 50 ? 'fair' : 'poor'
   const waveDesc = surfData.details.wave_height_ft >= 4 ? 'solid'
     : surfData.details.wave_height_ft >= 2 ? 'fun-sized' : 'small'
@@ -257,9 +353,7 @@ function createEnhancedFallbackReport(surfData: any, windMph: number): string {
     : condition === 'fair' ? 'Surfable if you need your wave fix.'
     : 'Might be better for a beach walk, but conditions can change quickly.'
 
-  const paragraph2 = `${spotContext}. ${tideNote}. ${verdict}`
-
-  return `${paragraph1}\n\n${paragraph2}`
+  return `${paragraph1}\n\n${spotContext}. ${tideNote}. ${verdict}`
 }
 
 async function handleRequest(req: Request): Promise<Response> {
@@ -277,7 +371,7 @@ async function handleRequest(req: Request): Promise<Response> {
       timestamp: new Date().toISOString(),
       runtime: 'Bun',
       version: Bun.version,
-      features: ['detailed-reports', 'multi-paragraph', 'enhanced-prompts']
+      features: ['detailed-reports', 'multi-paragraph', 'enhanced-prompts', 'session-viability']
     })
   }
 
@@ -302,7 +396,7 @@ async function handleRequest(req: Request): Promise<Response> {
         performance: {
           backend: 'bun-enhanced',
           runtime: 'bun',
-          features: ['detailed-structure', 'multiple-paragraphs', 'enhanced-prompts']
+          features: ['detailed-structure', 'multiple-paragraphs', 'enhanced-prompts', 'session-viability']
         }
       })
 
