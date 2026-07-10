@@ -116,7 +116,7 @@ function getBoardTypeRecommendation(waveHeight: number): string {
 function getFallbackTimingAdvice(tideState: string, viability: SessionViability): string {
   if (!viability.viable) {
     if (viability.reason === 'lightning') return 'Wait for the storm to clear completely before considering paddling out'
-    return `Check conditions again at dawn (~${viability.riseStr}) when it\'s light enough to surf`
+    return 'Check back tomorrow for an accurate read on conditions'
   }
   if (tideState.includes('Rising')) return 'Session now — rising tide tends to clean up the waves'
   if (tideState.includes('Falling')) return 'Go sooner rather than later — falling tide can get shallow over the sandbars'
@@ -147,10 +147,10 @@ There is active lightning or thunderstorm activity. This overrides everything el
     : `
 IMPORTANT — TIMING OVERRIDE:
 It is currently nighttime. Nobody surfs in the dark.
-- Do NOT write as if a session is possible right now.
-- Paragraph 1: briefly acknowledge the time, then describe what the current forecast conditions mean for tomorrow morning — will it be worth getting up for dawn patrol?
-- Paragraph 2: give local context for those conditions at first light (best spots, what to expect, crowd level at dawn). End with an honest bottom-line on whether a dawn session is worth setting an alarm for.
-- timingAdvice must direct the user to check back at dawn (~${(viability as { viable: false, reason: 'night', riseStr: string }).riseStr}).`
+- Do NOT attempt to describe or predict tomorrow's conditions — you have no forecast data, only a current snapshot that may not reflect what morning will bring.
+- Paragraph 1: acknowledge it's night and surfing isn't happening. If the user seems curious about conditions, you may briefly describe the CURRENT snapshot (not as a prediction) — e.g. "if you're wondering what's out there right now, there's X ft at Xs from the Y."
+- Paragraph 2: keep it short. Tell them to come back tomorrow when conditions can be properly assessed. No guessing, no false optimism.
+- timingAdvice: "Check back tomorrow" — nothing more specific.`
 
   return `You are an experienced local surf forecaster for St. Augustine, Florida. Write a 2-paragraph surf report. Be honest — don't oversell poor surf.
 
@@ -321,10 +321,9 @@ function createEnhancedFallbackReport(surfData: any, windMph: number, viability:
       return `${p1}\n\n${p2}`
     }
     // Night
-    const condition = surfData.score >= 70 ? 'worth setting an alarm for' : surfData.score >= 50 ? 'worth a look at dawn' : 'not spectacular — you can sleep in'
     const waveDesc = surfData.details.wave_height_ft >= 4 ? 'solid' : surfData.details.wave_height_ft >= 2 ? 'fun-sized' : 'small'
-    const p1 = `It's dark out — no surfing tonight. Tomorrow morning the forecast shows ${waveDesc} ${surfData.details.wave_height_ft}ft waves at ${surfData.details.wave_period_sec}s from the ${surfData.details.swell_direction_compass || 'east'}, with ${windMph} mph ${surfData.details.wind_direction_compass || 'variable'} winds. Water is ${surfData.weather.water_temperature_f}°F.`
-    const p2 = `Dawn patrol at ${viability.riseStr} looks ${condition}. ${surfData.details.wave_height_ft >= 3 ? 'Vilano Beach or the pier should have the best shape at first light.' : 'Crescent Beach or Vilano are your best bets for any rideable waves.'} Check back at sunrise for updated conditions.`
+    const p1 = `It's dark out — no surfing tonight. If you're still curious, the current snapshot shows ${waveDesc} ${surfData.details.wave_height_ft}ft waves at ${surfData.details.wave_period_sec}s from the ${surfData.details.swell_direction_compass || 'east'} with ${windMph} mph ${surfData.details.wind_direction_compass || 'variable'} winds, but that's right now — not a forecast for tomorrow.`
+    const p2 = `Check back tomorrow for an accurate read on conditions. Night surf isn't worth it, and neither is guessing.`
     return `${p1}\n\n${p2}`
   }
 
